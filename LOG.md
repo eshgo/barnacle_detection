@@ -18,3 +18,6 @@ Notes on observations, experiments, and failures.
 - `unseen_img2` does not have a green frame. If the detector cannot find one to crop, it should leave the image uncropped.
 - `unseen_img1` looks similar to `img1`.
 - `unseen_img2` looks straightforward; there do not appear to be any ambiguous barnacles.
+
+## More Image Observations after Loading into Numpy and OpenCV
+- after running `describe_file` on `mask1`, i found that the background white of the image has alpha=0, meaning it is transparent. This makes my life easier because to detect for the circles in the image i can just serach for pixels with alpha>0
