@@ -82,69 +82,73 @@ def load_mask_lines(path, threshold=0):
 def mask_to_regions(path, min_area=30, max_area=None, speck_size=10, gap_size=5):
     """Find each annotated barnacle by tracing its outline with cv2.findContours.
  
-    The masks have two kinds of noise, handled in order:
-      1. Floating specks: tiny clusters of line pixels that belong to no outline.
-         Removed first, so they can't become fake barnacles or get glued onto
-         real outlines by step 2.
-      2. Small gaps in outlines: a morphological CLOSE (dilate, then erode)
-         bridges gaps up to about gap_size pixels wide.
-    Outlines whose gap is too big to bridge are repaired with their convex
-    hull, which works because barnacles are roughly convex.
+    Key assumption: annotated outlines never touch each other, so each
+    connected cluster of line pixels is exactly one barnacle's outline.
  
-    How we know if an outline is closed: findContours with RETR_CCOMP returns
-    a two-level hierarchy of outer boundaries and the holes inside them.
-    A closed ring has a hole (its inside); an open "C" shape does not.
+    Steps, applied to each cluster SEPARATELY:
+      1. Skip clusters smaller than speck_size (floating specks of noise).
+      2. Cut the cluster out onto its own small blank canvas and apply a
+         morphological CLOSE to bridge gaps up to about gap_size pixels.
+         Doing this per cluster is the important part: closing the whole image
+         at once also bridges the space BETWEEN neighbouring outlines, fusing
+         densely packed barnacles into one shape. Alone on its canvas, an
+         outline has no neighbours to fuse with.
+      3. Trace the cluster with findContours (RETR_CCOMP). If it encloses a
+         hole, the outline is closed. If not (gap too big to bridge), use its
+         convex hull, since barnacles are roughly convex.
  
-    Parameters (all judgment calls; tune them and say why in the notebook)
-      min_area   : drop shapes smaller than this many pixels (after filling)
-      max_area   : optionally drop implausibly large shapes, e.g. two outlines
-                   that gap-closing accidentally merged
-      speck_size : line-pixel clusters smaller than this are treated as noise
-      gap_size   : width of gap (in pixels) that closing can bridge. Too big
-                   and neighbouring outlines may merge into one shape.
+    Known limitations:
+      * An outline broken into two or more separate pieces becomes two or
+        more clusters, each hulled separately -> several dots for one barnacle.
+      * Two outlines that DO touch form one cluster -> one dot for two barnacles.
  
     Returns
     -------
     regions  : (H, W) int array, 0 = not a barnacle, k = barnacle number k
     dots     : (N, 2) float array of barnacle centers in (x, y)
     areas    : (N,) float array of each barnacle's filled area in pixels
-    repaired : (N,) bool array, True if the outline was open and the
-               convex hull was used instead
+    repaired : (N,) bool array, True if the convex hull was used
     """
     lines = load_mask_lines(path).astype(np.uint8)
- 
-    # Step 1: remove floating specks. Each connected cluster of line pixels is
-    # measured; clusters too small to be an outline are erased.
+    H, W = lines.shape
     n, labels, stats, _ = cv2.connectedComponentsWithStats(lines, connectivity=8)
-    keep = stats[:, cv2.CC_STAT_AREA] >= speck_size
-    keep[0] = False  # label 0 is the empty background
-    lines = keep[labels].astype(np.uint8)
  
-    # Step 2: bridge small gaps.
+    kernel = None
     if gap_size > 0:
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (gap_size, gap_size))
-        lines = cv2.morphologyEx(lines, cv2.MORPH_CLOSE, kernel)
+    pad = gap_size + 2  # margin so closing near the cut-out's edge behaves normally
  
-    # Step 3: trace outlines.
-    contours, hierarchy = cv2.findContours(lines, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
- 
-    regions = np.zeros(lines.shape, dtype=np.int32)
+    regions = np.zeros((H, W), dtype=np.int32)
     dots, areas, repaired = [], [], []
-    if hierarchy is None:  # empty mask
-        return regions, np.empty((0, 2)), np.array([]), np.array([], dtype=bool)
  
-    # hierarchy[i] = [next, previous, first_child, parent]
-    for contour, (_, _, child, parent) in zip(contours, hierarchy[0]):
-        if parent != -1:
-            continue  # this contour is a hole (the inside of a ring), skip it
-        is_closed = child != -1
+    for i in range(1, n):  # label 0 is the empty background
+        x, y, w, h, size = stats[i]
+        if size < speck_size:
+            continue  # step 1: floating speck
+ 
+        # step 2: cut this one cluster out (with padding) and close its gaps
+        x0, y0 = max(x - pad, 0), max(y - pad, 0)
+        x1, y1 = min(x + w + pad, W), min(y + h + pad, H)
+        piece = (labels[y0:y1, x0:x1] == i).astype(np.uint8)
+        if kernel is not None:
+            piece = cv2.morphologyEx(piece, cv2.MORPH_CLOSE, kernel)
+ 
+        # step 3: trace it; offset shifts contour coordinates back to full-image space
+        contours, hierarchy = cv2.findContours(
+            piece, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE, offset=(int(x0), int(y0))
+        )
+        if hierarchy is None:
+            continue
+        # hierarchy[j] = [next, previous, first_child, parent]; keep outer boundaries
+        outers = [(c, hier) for c, hier in zip(contours, hierarchy[0]) if hier[3] == -1]
+        contour, hier = max(outers, key=lambda o: cv2.contourArea(o[0]))
+        is_closed = hier[2] != -1
         shape = contour if is_closed else cv2.convexHull(contour)
  
         area = cv2.contourArea(shape)
         if area < min_area or (max_area is not None and area > max_area):
             continue
- 
-        m = cv2.moments(shape)  # centroid = (m10/m00, m01/m00)
+        m = cv2.moments(shape)
         if m["m00"] == 0:
             continue
  
@@ -154,7 +158,8 @@ def mask_to_regions(path, min_area=30, max_area=None, speck_size=10, gap_size=5)
         areas.append(area)
         repaired.append(not is_closed)
  
-    return regions, np.array(dots, dtype=float), np.array(areas), np.array(repaired)
+    return (regions, np.array(dots, dtype=float).reshape(-1, 2),
+            np.array(areas), np.array(repaired, dtype=bool))
  
  
 def mask_to_dots(path, min_area=30, max_area=None):
