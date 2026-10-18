@@ -79,7 +79,7 @@ def load_mask_lines(path, threshold=0):
 
 # Converting masks to easily countable barnacle region dots
 
-def mask_to_regions(path, min_area=30, max_area=None, speck_size=10, gap_size=5):
+def mask_to_regions(path, min_area=30, max_area=None, speck_size=5, gap_size=5):
     """Find each annotated barnacle by tracing its outline with cv2.findContours.
  
     Key assumption: annotated outlines never touch each other, so each
@@ -111,7 +111,7 @@ def mask_to_regions(path, min_area=30, max_area=None, speck_size=10, gap_size=5)
     """
     lines = load_mask_lines(path).astype(np.uint8)
     H, W = lines.shape
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(lines, connectivity=8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(lines, connectivity=4) # 2 barnacles do touch by a diagonal, so connectivity=4 is correct here. 8-connectivity would merge them into one cluster.
  
     kernel = None
     if gap_size > 0:
