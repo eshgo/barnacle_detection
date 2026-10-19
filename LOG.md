@@ -1,8 +1,35 @@
-# Lab Log
+# Lab Log: Counting Barnacles
 
 Notes on observations, experiments, and failures.
 
-## Learning Resources
+This project was built iteratively with help from Claude, 
+which I used to write and debug code and to talk through design decisions.
+All decisions on strategy, methods, and features as well as final review was still made by me, however, with my thought process explained here.
+Claude also recorded our coversations and summarized a lot of the decision making process in this log.
+
+## The idea
+
+Scientists photograph a wire frame on a rock and then count every barnacle
+inside it by hand, often over 1,000 per photo. Full automation is unrealistic
+with only two labeled photos, so the goal is a **first draft**: the system
+proposes one dot per barnacle, and a person checks and corrects the dots
+instead of counting from zero.
+
+I broke the system into four subtasks, each with a clear input and output:
+
+| Subtask | Input | Output | File |
+|---|---|---|---|
+| Ground truth | hand-drawn outline masks | one (x, y) dot per barnacle | `data.py` |
+| Frame cropping | raw photo | straightened image of the frame's biggest rectangle | `frame.py` |
+| Detection | cropped image | one dot per predicted barnacle | `features.py`, `detect.py` |
+| Evaluation | predicted dots + true dots | count error, precision, recall, F1, plots | `evaluate.py` |
+
+The core idea: if every barnacle becomes a dot, counting is trivial, and
+evaluating is just comparing my dots with the scientists' dots.
+
+---
+
+## Initial Learning and Idea Generation Resources
 
 - [Cropping an Image Using OpenCV](https://opencv.org/cropping-an-image-using-opencv/)
 - [scikit-learn RandomForestClassifier](https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.RandomForestClassifier.html)
@@ -36,36 +63,6 @@ Notes on observations, experiments, and failures.
 - In dense areas, barnacles were disappearing. The close ran on the whole image, so it bridged the space between nearby outlines as well as gaps within them, fusing neighbors into one shape. On mask1 I saw big clusters of contours only counted as a few dots.
 - Since outlines don't touch, each connected cluster of line pixels is one barnacle. Now each cluster is cut out and closed on its own, so it has no neighbors to merge with.
 - Upon closer inspection of masks, it looks like some of the outlines do touch each other, so now we have to go back to the original strategy of detecting space inside an outline
-
-
-# Lab Log: Counting Barnacles
-
-This project was built iteratively with help from Claude, 
-which I used to write and debug code and to talk through design decisions.
-All decisions on strategy, methods, and features as well as final review was still made by me, however, with my thought process explained here.
-Claude also recorded our coversations and summarized a lot of the decision making process in this log.
-
-## The idea
-
-Scientists photograph a wire frame on a rock and then count every barnacle
-inside it by hand, often over 1,000 per photo. Full automation is unrealistic
-with only two labeled photos, so the goal is a **first draft**: the system
-proposes one dot per barnacle, and a person checks and corrects the dots
-instead of counting from zero.
-
-I broke the system into four subtasks, each with a clear input and output:
-
-| Subtask | Input | Output | File |
-|---|---|---|---|
-| Ground truth | hand-drawn outline masks | one (x, y) dot per barnacle | `data.py` |
-| Frame cropping | raw photo | straightened image of the frame's biggest rectangle | `frame.py` |
-| Detection | cropped image | one dot per predicted barnacle | `features.py`, `detect.py` |
-| Evaluation | predicted dots + true dots | count error, precision, recall, F1, plots | `evaluate.py` |
-
-The core idea: if every barnacle becomes a dot, counting is trivial, and
-evaluating is just comparing my dots with the scientists' dots.
-
----
 
 ## 1. Ground truth: turning outlines into dots
 
