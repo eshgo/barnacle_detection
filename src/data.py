@@ -1,30 +1,31 @@
 """
-data.py — loading images and turning the hand-annotated masks into ground truth.
+data.py: loading images and turning the hand-annotated masks into ground truth.
 
-Everything else in the project depends on this file:
-  * load_image()   gives every other module images in one consistent format.
-  * mask_to_dots() turns the scientists' contour masks into ground-truth "dots"
-                   (one (x, y) point per barnacle), which is what we evaluate against.
+  * load_image()      gives every other module images in one format (RGB uint8).
+  * mask_to_regions() turns the scientists' contour masks into one region and
+                      one (x, y) "dot" per barnacle. Dots are what we evaluate on.
 
-COORDINATE CONVENTION (important!):
-  All dots in this project are stored as (x, y) = (column, row), matching OpenCV.
-  Some libraries (e.g. skimage.feature.peak_local_max) return (row, col) instead.
-  Always convert to (x, y) before comparing dots.
+What the annotations actually outline: looking at masked_img1/2, each blue
+contour traces the barnacle's central plates (the operculum, the "diamond"),
+not the whole white shell. So a "barnacle region" here means the operculum.
+
+COORDINATE CONVENTION: every dot is (x, y) = (column, row), like OpenCV.
+skimage.feature.peak_local_max returns (row, col); flip it before comparing.
 """
 
 from pathlib import Path
 
 import cv2
 import numpy as np
+from scipy import ndimage
 from scipy.spatial import cKDTree
 
-# images live in barnacle_detection/data/.
-# Building the path from this file's location means the code works no matter which folder you launch the notebook from.
+# <repo>/data, found relative to this file so it works from any folder.
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
 def _resolve(path):
-    """Let callers pass either a full path or just a filename like 'img1.png'."""
+    """Accept a full path or just a filename inside data/."""
     path = Path(path)
     if not path.exists():
         path = DATA_DIR / path
@@ -33,13 +34,15 @@ def _resolve(path):
     return path
 
 
-# Loading image
+# ---------------------------------------------------------------------------
+# Loading
+# ---------------------------------------------------------------------------
 
 def load_image(path):
-    """Load a photo as an RGB uint8 array of shape (H, W, 3).
+    """Load a photo as RGB uint8 (H, W, 3). Drops any alpha channel.
 
-    OpenCV loads images in BGR order; matplotlib expects RGB. Converting here,
-    once, means no other file ever has to think about it.
+    OpenCV loads BGR; matplotlib expects RGB. Converting once, here, means
+    no other file has to think about it.
     """
     img = cv2.imread(str(_resolve(path)), cv2.IMREAD_COLOR)
     if img is None:
@@ -48,165 +51,277 @@ def load_image(path):
 
 
 def describe_file(path):
-    """Print what a file actually contains (shape, channels, value ranges).
-
-    Use this before trusting any assumption about the masks: are they
-    transparent PNGs? Black backgrounds? Colored lines? Look first.
-    """
+    """Print shape and per-channel value ranges. Look before assuming."""
     raw = cv2.imread(str(_resolve(path)), cv2.IMREAD_UNCHANGED)
     print(f"{Path(path).name}: shape={raw.shape}, dtype={raw.dtype}")
     channels = [raw] if raw.ndim == 2 else [raw[:, :, c] for c in range(raw.shape[2])]
     for c, ch in enumerate(channels):
-        print(f"  channel {c}: min={ch.min()}, max={ch.max()}, "
-              f"unique values={len(np.unique(ch))}")
+        print(f"  channel {c}: min={ch.min()}, max={ch.max()}, unique={len(np.unique(ch))}")
     return raw
 
 
 def load_mask_lines(path, threshold=0):
-    """Return a boolean array that is True wherever a contour line was drawn.
+    """Boolean array, True where a contour line was drawn.
 
-    Handles countour with RGBA with a transparent background. the alpha channel marks the lines.
+    The masks are RGBA with a transparent WHITE background, so color can't
+    separate lines from background. Alpha can: alpha > 0 means "drawn".
+    Falls back to "any nonzero pixel" for masks with no transparency.
     """
     raw = cv2.imread(str(_resolve(path)), cv2.IMREAD_UNCHANGED)
     if raw is None:
         raise ValueError(f"OpenCV could not decode {path}")
-
-    if raw.ndim == 3 and raw.shape[2] == 4:
-        lines = raw[:, :, 3] > threshold          # non line pixels are transparent
-
+    if raw.ndim == 3 and raw.shape[2] == 4 and raw[:, :, 3].min() < 255:
+        lines = raw[:, :, 3] > threshold
+    else:
+        gray = raw if raw.ndim == 2 else raw[:, :, :3].max(axis=2)
+        lines = gray > threshold
+    if lines.mean() > 0.5:
+        raise ValueError(f"{lines.mean():.0%} of pixels look like lines; "
+                         "the background is probably not transparent/black.")
     return lines
 
 
-# Converting masks to easily countable barnacle region dots
+# ---------------------------------------------------------------------------
+# Masks -> barnacle regions -> dots
+# ---------------------------------------------------------------------------
 
-def mask_to_regions(path, min_area=30, max_area=None, speck_size=5, gap_size=5):
-    """Find each annotated barnacle by tracing its outline with cv2.findContours.
- 
-    Key assumption: annotated outlines never touch each other, so each
-    connected cluster of line pixels is exactly one barnacle's outline.
- 
-    Steps, applied to each cluster SEPARATELY:
-      1. Skip clusters smaller than speck_size (floating specks of noise).
-      2. Cut the cluster out onto its own small blank canvas and apply a
-         morphological CLOSE to bridge gaps up to about gap_size pixels.
-         Doing this per cluster is the important part: closing the whole image
-         at once also bridges the space BETWEEN neighbouring outlines, fusing
-         densely packed barnacles into one shape. Alone on its canvas, an
-         outline has no neighbours to fuse with.
-      3. Trace the cluster with findContours (RETR_CCOMP). If it encloses a
-         hole, the outline is closed. If not (gap too big to bridge), use its
-         convex hull, since barnacles are roughly convex.
- 
-    Known limitations:
-      * An outline broken into two or more separate pieces becomes two or
-        more clusters, each hulled separately -> several dots for one barnacle.
-      * Two outlines that DO touch form one cluster -> one dot for two barnacles.
- 
-    Returns
-    -------
-    regions  : (H, W) int array, 0 = not a barnacle, k = barnacle number k
-    dots     : (N, 2) float array of barnacle centers in (x, y)
-    areas    : (N,) float array of each barnacle's filled area in pixels
-    repaired : (N,) bool array, True if the convex hull was used
+def _disk(r):
+    """Round structuring element of radius r."""
+    r = max(0, int(round(r)))
+    return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+
+
+def estimate_line_width(lines):
+    """Typical stroke thickness in pixels.
+
+    The distance transform gives each line pixel its distance to the nearest
+    non-line pixel; mid-stroke that's about (w + 1) / 2, so w = 2 * high - 1.
+    Used PER CLUSTER below, because mask1 mixes thin strokes (~3 px) with a
+    thick-stroke region (~8-10 px), so one global width was wrong for both.
     """
-    lines = load_mask_lines(path).astype(np.uint8)
+    dist = cv2.distanceTransform(lines.astype(np.uint8), cv2.DIST_L2, 3)
+    values = dist[lines.astype(bool)]
+    if values.size == 0:
+        return 1.0
+    return max(1.0, 2 * float(np.percentile(values, 95)) - 1)
+
+
+def mask_to_regions(path, min_area=30, max_area=None, speck_size=10, gap_size=5,
+                    min_hole_area=5, min_arc_size=15, merge_factor=1.8,
+                    min_relative_area=0.15, return_details=False):
+    """Find every annotated barnacle. Handles, in the real masks:
+
+      floating pixels   clusters of line pixels < speck_size are noise
+      gaps in outlines  closed per cluster; big gaps -> convex hull repair
+      line "bubbles"    1-2 px holes inside a stroke (358 of 397 outline
+                        clusters in mask2 have one!) are ignored: a real
+                        barnacle's hole must be >= min_hole_area
+      touching outlines two touching outlines are one cluster, but each
+                        closed one encloses its own hole, so we count holes
+      thick strokes     line width is measured per cluster, not globally
+      filled outlines   some tiny barnacles are drawn so thick there's no hole;
+                        they fall through to the hull repair, which is fine
+
+    Per cluster of connected line pixels:
+      a. cut it out on its own canvas (so neighbours can never fuse)
+      b. every hole >= min_hole_area = one closed barnacle. Holes are found
+         twice, with and without closing small gaps, keeping whichever finds
+         more: closing rescues gapped outlines, but also fills the small
+         interiors of tiny barnacles, so it's only used when it helps
+      c. every stroke pixel is given to its NEAREST hole (if within about one
+         line width). Body of a barnacle = its hole + its stroke pixels.
+      d. stroke pixels nobody claimed = an outline that never closed -> hull.
+         At most two outlines touch, so: 2 holes -> no open outline here;
+         1 hole -> at most one open outline, so pool all leftover pieces;
+         0 holes -> one open outline, or two touching ones (split in step e)
+      e. a hull > merge_factor x the median closed barnacle is probably two
+         touching open outlines: split it at its narrowest point
+      f. drop shapes smaller than min_area pixels OR smaller than
+         min_relative_area x the median barnacle (lens-shaped slivers etc.)
+
+    Returns regions (H, W) int labels, dots (N, 2) (x, y), areas (N,),
+    repaired (N,) bool, and optionally a details dict of counts.
+    """
+    lines = load_mask_lines(path)
     H, W = lines.shape
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(lines, connectivity=4) # 2 barnacles do touch by a diagonal, so connectivity=4 is correct here. 8-connectivity would merge them into one cluster.
- 
-    kernel = None
-    if gap_size > 0:
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (gap_size, gap_size))
-    pad = gap_size + 2  # margin so closing near the cut-out's edge behaves normally
- 
-    regions = np.zeros((H, W), dtype=np.int32)
-    dots, areas, repaired = [], [], []
- 
-    for i in range(1, n):  # label 0 is the empty background
+    close_kernel = _disk(gap_size // 2) if gap_size > 0 else None
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(lines.astype(np.uint8),
+                                                           connectivity=8)
+    details = {"specks": 0, "ignored_small_holes": 0, "gap_closed": 0,
+               "closed": 0, "repaired": 0,
+               "split_merged_arcs": 0, "dropped_overlapping_arcs": 0,
+               "dropped_too_small": 0, "dropped_too_large": 0}
+    candidates = []  # (local_mask, x0, y0, repaired, leftover_points_or_None)
+
+    for i in range(1, n):  # label 0 = empty background
         x, y, w, h, size = stats[i]
         if size < speck_size:
-            continue  # step 1: floating speck
- 
-        # step 2: cut this one cluster out (with padding) and close its gaps
+            details["specks"] += 1
+            continue
+
+        piece_raw = labels[y:y + h, x:x + w] == i
+        width = estimate_line_width(piece_raw)            # this cluster's own width
+        reach = int(np.ceil(width)) + 1                    # how far a stroke extends
+        pad = gap_size + reach + 2
         x0, y0 = max(x - pad, 0), max(y - pad, 0)
         x1, y1 = min(x + w + pad, W), min(y + h + pad, H)
-        piece = (labels[y0:y1, x0:x1] == i).astype(np.uint8)
-        if kernel is not None:
-            piece = cv2.morphologyEx(piece, cv2.MORPH_CLOSE, kernel)
- 
-        # step 3: trace it; offset shifts contour coordinates back to full-image space
-        contours, hierarchy = cv2.findContours(
-            piece, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE, offset=(int(x0), int(y0))
-        )
-        if hierarchy is None:
+        piece = labels[y0:y1, x0:x1] == i
+
+        # (a)+(b) find real holes, with and without gap closing, and keep the
+        # version that finds MORE. Closing rescues gapped outlines but also
+        # fills tiny barnacles' small interiors, so it's only used when it helps.
+        raw = piece.astype(np.uint8)
+        hole_ids, n_holes, n_bubbles = _find_holes(raw, min_hole_area)
+        stroke_src = piece
+        if close_kernel is not None:
+            closed = cv2.morphologyEx(raw, cv2.MORPH_CLOSE, close_kernel)
+            c_ids, c_n, c_bubbles = _find_holes(closed, min_hole_area)
+            if c_n > n_holes:
+                hole_ids, n_holes, n_bubbles = c_ids, c_n, c_bubbles
+                stroke_src = piece | closed.astype(bool)
+                details["gap_closed"] += 1
+        details["ignored_small_holes"] += n_bubbles
+
+        # (c) give each stroke pixel to its nearest hole
+        claimed = np.zeros(piece.shape, bool)
+        if n_holes:
+            dist, (iy, ix) = ndimage.distance_transform_edt(hole_ids == 0, return_indices=True)
+            nearest = hole_ids[iy, ix]                      # id of the closest hole
+            stroke = stroke_src & (dist <= reach)
+            for k in range(1, n_holes + 1):
+                body = (hole_ids == k) | (stroke & (nearest == k))
+                candidates.append((body, x0, y0, False, None))
+                claimed |= body
+            claimed = cv2.dilate(claimed.astype(np.uint8), _disk(1)).astype(bool)
+
+        # (d) leftover stroke = open outline(s)
+        if n_holes >= 2:
+            continue                                        # both touching ones are closed
+        leftover = (piece & ~claimed).astype(np.uint8)
+        m, arc_labels, arc_stats, _ = cv2.connectedComponentsWithStats(leftover, connectivity=8)
+        big = [j for j in range(1, m) if arc_stats[j, cv2.CC_STAT_AREA] >= min_arc_size]
+        if not big:
             continue
-        # hierarchy[j] = [next, previous, first_child, parent]; keep outer boundaries
-        outers = [(c, hier) for c, hier in zip(contours, hierarchy[0]) if hier[3] == -1]
-        contour, hier = max(outers, key=lambda o: cv2.contourArea(o[0]))
-        is_closed = hier[2] != -1
-        shape = contour if is_closed else cv2.convexHull(contour)
- 
-        area = cv2.contourArea(shape)
-        if area < min_area or (max_area is not None and area > max_area):
+        ys, xs = np.nonzero(np.isin(arc_labels, big))
+        points = np.column_stack([xs, ys]).astype(np.int32)
+        hull = _hull_mask(points, piece.shape)
+        if (hull & claimed).sum() > 0.5 * hull.sum():
+            details["dropped_overlapping_arcs"] += 1        # fragment of a found barnacle
             continue
-        m = cv2.moments(shape)
-        if m["m00"] == 0:
+        candidates.append((hull, x0, y0, True, points))
+
+    # (e) split oversized hulls (two touching open outlines)
+    closed_areas = [c[0].sum() for c in candidates if not c[3]]
+    typical = float(np.median(closed_areas)) if closed_areas else None
+    final = []
+    for mask, x0, y0, rep, points in candidates:
+        if rep and typical and mask.sum() > merge_factor * typical \
+                and len(points) >= 2 * min_arc_size:
+            details["split_merged_arcs"] += 1
+            for half in _split_at_waist(points):
+                final.append((_hull_mask(half, mask.shape), x0, y0, True))
+        else:
+            final.append((mask, x0, y0, rep))
+
+    # (f) size filters, then paint regions and compute centers
+    min_keep = max(min_area, min_relative_area * typical) if typical else min_area
+    regions = np.zeros((H, W), dtype=np.int32)
+    dots, areas, repaired = [], [], []
+    for mask, x0, y0, rep in final:
+        area = float(mask.sum())
+        if area < min_keep:
+            details["dropped_too_small"] += 1
             continue
- 
+        if max_area is not None and area > max_area:
+            details["dropped_too_large"] += 1
+            continue
+        ys, xs = np.nonzero(mask)
         label = len(dots) + 1
-        cv2.drawContours(regions, [shape], -1, label, thickness=cv2.FILLED)
-        dots.append((m["m10"] / m["m00"], m["m01"] / m["m00"]))
+        target = regions[y0:y0 + mask.shape[0], x0:x0 + mask.shape[1]]
+        target[mask & (target == 0)] = label                # never overwrite a neighbour
+        dots.append((xs.mean() + x0, ys.mean() + y0))
         areas.append(area)
-        repaired.append(not is_closed)
- 
-    return (regions, np.array(dots, dtype=float).reshape(-1, 2),
-            np.array(areas), np.array(repaired, dtype=bool))
- 
- 
-def mask_to_dots(path, min_area=30, max_area=None):
-    """Ground-truth barnacle centers as an (N, 2) array of (x, y)."""
-    _, dots, _, _ = mask_to_regions(path, min_area, max_area)
-    return dots
- 
- 
-def regions_to_filled_mask(regions, grow=0):
-    """Boolean 'is this pixel barnacle?' mask, for training pixel classifiers.
- 
-    Filled contours already include the drawn outline, so no growing is
-    needed by default. 'grow' is kept in case you want a safety margin.
+        repaired.append(rep)
+        details["repaired" if rep else "closed"] += 1
+
+    out = (regions, np.array(dots, dtype=float).reshape(-1, 2),
+           np.array(areas), np.array(repaired, dtype=bool))
+    return out + (details,) if return_details else out
+
+
+def _find_holes(piece, min_hole_area):
+    """Label the real holes of one outline cluster.
+
+    Returns (hole_ids, n_holes, n_bubbles): hole_ids is an int image where
+    each real hole has its own id 1..n. Holes smaller than min_hole_area are
+    "bubbles" inside the stroke and are counted but not labeled.
     """
+    contours, hierarchy = cv2.findContours(piece, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+    hole_ids = np.zeros(piece.shape, np.int32)
+    n_holes = n_bubbles = 0
+    if hierarchy is not None:
+        for c, hier in zip(contours, hierarchy[0]):
+            if hier[3] == -1:
+                continue                                    # outer boundary
+            if cv2.contourArea(c) < min_hole_area:
+                n_bubbles += 1                              # bubble in the stroke
+                continue
+            n_holes += 1
+            cv2.drawContours(hole_ids, [c], -1, n_holes, thickness=cv2.FILLED)
+    return hole_ids, n_holes, n_bubbles
+
+
+def _hull_mask(points, shape):
+    """Filled convex hull of (x, y) points as a boolean mask."""
+    mask = np.zeros(shape, np.uint8)
+    cv2.fillConvexPoly(mask, cv2.convexHull(points.astype(np.int32)), 1)
+    return mask.astype(bool)
+
+
+def _split_at_waist(points):
+    """Split the pixels of two touching outlines into two groups.
+
+    Two touching rings form a dumbbell: long along the line joining their
+    centers, and narrowest where they touch. So: find the long axis (PCA),
+    project the pixels onto it, and cut where the fewest pixels are, searching
+    only the middle 60% so we don't cut off a sliver at one end.
+    (k-means was tried first; on thin 1-px rings it sometimes split diagonally,
+    because rings aren't the compact blobs k-means assumes.)
+    """
+    pts = points.astype(float)
+    centered = pts - pts.mean(axis=0)
+    _, _, vt = np.linalg.svd(centered, full_matrices=False)
+    proj = centered @ vt[0]
+    lo, hi = np.percentile(proj, [20, 80])
+    edges = np.arange(lo, hi + 2, 2.0)
+    if len(edges) < 3:
+        cut = np.median(proj)
+    else:
+        counts, _ = np.histogram(proj, bins=edges)
+        k = int(np.argmin(counts))
+        cut = (edges[k] + edges[k + 1]) / 2
+    return [points[proj < cut], points[proj >= cut]]
+
+
+def regions_to_filled_mask(regions, grow=0):
+    """Boolean 'is this pixel barnacle?' mask, for training pixel classifiers."""
     filled = (regions > 0).astype(np.uint8)
     if grow > 0:
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1))
-        filled = cv2.dilate(filled, kernel)
+        filled = cv2.dilate(filled, _disk(grow))
     return filled.astype(bool)
- 
- 
+
+
 # ---------------------------------------------------------------------------
-# Convenience + exploration
+# Exploration
 # ---------------------------------------------------------------------------
- 
-def load_example(n, min_area=30):
-    """Load img{n}.png with its ground truth. Checks that image and mask align."""
-    image = load_image(f"img{n}.png")
-    regions, dots, areas, repaired = mask_to_regions(f"mask{n}.png", min_area)
-    if image.shape[:2] != regions.shape:
-        raise ValueError(
-            f"img{n} is {image.shape[:2]} but mask{n} is {regions.shape}; "
-            "they must match pixel-for-pixel."
-        )
-    return {"image": image, "regions": regions, "dots": dots,
-            "areas": areas, "repaired": repaired}
- 
- 
+
 def barnacle_stats(dots, areas):
-    """Size and spacing statistics, used to justify parameters later.
- 
-    * equivalent diameter: diameter of a circle with the same area.
-      -> informs blob/kernel sizes and the matching radius in evaluation.
-    * nearest-neighbour distance: how tightly packed barnacles are.
-      -> informs min_distance when finding peaks (dots) in predictions.
+    """Size and spacing statistics, used to justify parameters elsewhere.
+
+    equivalent diameter -> kernel sizes, matching radius in evaluation
+    nearest-neighbour distance -> min_distance when turning maps into dots
     """
     diameters = 2 * np.sqrt(np.asarray(areas) / np.pi)
-    nn_dist = cKDTree(dots).query(dots, k=2)[0][:, 1] if len(dots) > 1 else np.array([])
-    return {"count": len(dots), "diameter": diameters, "nn_distance": nn_dist}
- 
+    nn = cKDTree(dots).query(dots, k=2)[0][:, 1] if len(dots) > 1 else np.array([])
+    return {"count": len(dots), "diameter": diameters, "nn_distance": nn}
