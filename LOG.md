@@ -40,6 +40,11 @@ Notes on observations, experiments, and failures.
 
 # Lab Log: Counting Barnacles
 
+This project was built iteratively with help from Claude, 
+which I used to write and debug code and to talk through design decisions.
+All decisions on strategy, methods, and features as well as final review was still made by me, however, with my thought process explained here.
+Claude also recorded our coversations and summarized a lot of the decision making process in this log.
+
 ## The idea
 
 Scientists photograph a wire frame on a rock and then count every barnacle
@@ -472,5 +477,4 @@ as a first draft for human review.
   behind the LoG scale-estimation attempt, and why its σ²-normalization exists.
 * Claude, used throughout to write, test, and debug code and to
   talk through design decisions.
-* This project was built iteratively with help from Claude (an AI assistant), which I used to write and debug code and to talk through design decisions.
 ---
