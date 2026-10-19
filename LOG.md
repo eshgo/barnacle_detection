@@ -1,6 +1,6 @@
 # Lab Log: Counting Barnacles
 
-This project was built iteratively with help from Claude, which I used to write and debug code and to talk through design decisions. However, all design decisions, overall strategy, and final review was done by me.
+This project was built iteratively with help from Claude, which I used to write and debug code and to talk through design decisions. However, all design decisions, overall strategy, and final review was done by me. Claude recorded and summarized large portions of our conversations and decision making in this file.
 
 Every number below comes from code in this repo and can be reproduced with `run_experiments.py` and `count_barnacles.py`. The notebook (`notebooks/barnacle_counting.ipynb`) tells the same story with figures.
 
