@@ -26,6 +26,7 @@ python count_barnacles.py                # count unseen_img1 + unseen_img2 → o
 python count_barnacles.py my_photo.png   # count any photo
 python run_experiments.py split          # main evaluation (≈2–3 min on 1 CPU)
 python run_experiments.py cross          # train on one image, test on the other
+python run_experiments.py sweep          # dot spacing vs accuracy
 ```
 
 ## Files
@@ -37,6 +38,8 @@ python run_experiments.py cross          # train on one image, test on the other
 | `src/detect.py` | baseline blob detector; random forest; probability map → dots |
 | `src/evaluate.py` | one-to-one dot matching, metrics, overlay and tile plots |
 | `src/pipeline.py` | the end-to-end steps shared by both scripts |
+| `src/experiments.py` | the evaluation experiments (shared by the notebook and `run_experiments.py`), cached in `outputs/cache/` |
+| `notebooks/barnacle_counting.ipynb` | **start here:** the whole project as a story, with figures |
 | `count_barnacles.py` | the program a scientist would run |
 | `run_experiments.py` | reproduces every number in LOG.md |
 | `LOG.md` | decisions, successes, failures, and what I'd do next |
