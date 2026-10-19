@@ -1,0 +1,2 @@
+         forest img1 -> img2 | count  1662 vs   398 (+317.6%) | P 0.16  R 0.66  F1 0.25
+         forest img2 -> img1 | count   503 vs  1733 ( -71.0%) | P 0.18  R 0.05  F1 0.08

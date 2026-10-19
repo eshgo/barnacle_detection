@@ -1,0 +1,12 @@
+             baseline img1 R | count   297 vs   808 ( -63.2%) | P 0.42  R 0.15  F1 0.23
+             forest   img1 R | count   835 vs   808 (  +3.3%) | P 0.83  R 0.86  F1 0.84
+             baseline img2 R | count   299 vs   220 ( +35.9%) | P 0.43  R 0.59  F1 0.50
+             forest   img2 R | count   658 vs   220 (+199.1%) | P 0.29  R 0.85  F1 0.43
+  (fold train=L: baseline radius 14.7, threshold 0.35)
+  top forest features: lab_a 0.12, lab_b 0.12, log_16 0.10, smooth_8 0.10, smooth_4 0.08, smooth_16 0.06
+             baseline img1 L | count   331 vs   768 ( -56.9%) | P 0.39  R 0.17  F1 0.24
+             forest   img1 L | count   787 vs   768 (  +2.5%) | P 0.77  R 0.79  F1 0.78
+             baseline img2 L | count   361 vs   153 (+135.9%) | P 0.28  R 0.66  F1 0.39
+             forest   img2 L | count   461 vs   153 (+201.3%) | P 0.29  R 0.88  F1 0.44
+  (fold train=R: baseline radius 14.7, threshold 0.25)
+  top forest features: log_16 0.14, lab_b 0.10, lab_a 0.10, smooth_4 0.06, smooth_8 0.06, smooth_16 0.06
