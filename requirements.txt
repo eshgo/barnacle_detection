@@ -71,6 +71,7 @@ numpy==2.0.2
 opencv-python==5.0.0.93
 overrides==7.7.0
 packaging==26.3
+pandas==2.3.3
 pandocfilters==1.5.1
 parso==0.8.7
 pexpect==4.9.0
@@ -86,6 +87,7 @@ Pygments==2.21.0
 pyparsing==3.3.3
 python-dateutil==2.9.0.post0
 python-json-logger==4.0.0
+pytz==2026.5
 PyYAML==6.0.3
 pyzmq==27.2.0
 referencing==0.36.2
