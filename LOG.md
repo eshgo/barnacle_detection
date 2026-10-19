@@ -493,5 +493,5 @@ as a first draft for human review.
   on a bank of filter responses.
 * Lindeberg's work on scale-space and automatic scale selection: the theory
   behind the LoG scale-estimation attempt, and why its σ²-normalization exists.
-* Claude (Anthropic), used throughout to write, test, and debug code and to
+* Claude, used throughout to write, test, and debug code and to
   talk through design decisions.
