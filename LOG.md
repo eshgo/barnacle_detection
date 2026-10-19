@@ -40,13 +40,6 @@ Notes on observations, experiments, and failures.
 
 # Lab Log: Counting Barnacles
 
-> This project was built iteratively with help from Claude (an AI assistant),
-> which I used to write and debug code and to talk through design decisions.
-> Every number below comes from code in this repo and can be reproduced with
-> `run_experiments.py` and `count_barnacles.py`.
-
----
-
 ## The idea
 
 Scientists photograph a wire frame on a rock and then count every barnacle
@@ -477,6 +470,7 @@ as a first draft for human review.
   on a bank of filter responses.
 * Lindeberg's work on scale-space and automatic scale selection: the theory
   behind the LoG scale-estimation attempt, and why its σ²-normalization exists.
-* Claude (Anthropic), used throughout to write, test, and debug code and to
+* Claude, used throughout to write, test, and debug code and to
   talk through design decisions.
-
+* This project was built iteratively with help from Claude (an AI assistant), which I used to write and debug code and to talk through design decisions.
+---
