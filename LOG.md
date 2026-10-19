@@ -1,11 +1,12 @@
 # Lab Log: Counting Barnacles
 
-Notes on observations, experiments, and failures.
+> This project was built iteratively with help from Claude (an AI assistant),
+> which I used to write and debug code and to talk through design decisions.
+> Every number below comes from code in this repo and can be reproduced with
+> `run_experiments.py` and `count_barnacles.py`. The notebook
+> (`notebooks/barnacle_counting.ipynb`) tells the same story with figures.
 
-This project was built iteratively with help from Claude, 
-which I used to write and debug code and to talk through design decisions.
-All decisions on strategy, methods, and features as well as final review was still made by me, however, with my thought process explained here.
-Claude also recorded our coversations and summarized a lot of the decision making process in this log.
+---
 
 ## The idea
 
@@ -28,41 +29,6 @@ The core idea: if every barnacle becomes a dot, counting is trivial, and
 evaluating is just comparing my dots with the scientists' dots.
 
 ---
-
-## Initial Learning and Idea Generation Resources
-
-- [Cropping an Image Using OpenCV](https://opencv.org/cropping-an-image-using-opencv/)
-- [scikit-learn RandomForestClassifier](https://scikit-learn.org/stable/modules/generated/sklearn.ensemble.RandomForestClassifier.html)
-- [Kernel (image processing)](https://en.wikipedia.org/wiki/Kernel_(image_processing))
-
-## Initial Image Observations
-
-- Barnacles often have an eye-like shape on top.
-- Some barnacles are sideways, so the opening on top is not clearly visible.
-- Barnacles vary in size.
-- The frames are both green, but their shades differ slightly. This should be manageable.
-- Barnacles in the two photos differ in color.
-- `unseen_img2` does not have a green frame. If the detector cannot find one to crop, it should leave the image uncropped.
-- `unseen_img1` looks similar to `img1`.
-- `unseen_img2` looks straightforward; there do not appear to be any ambiguous barnacles.
-
-## Creating data.py, which loads the images and turns the masks into easily countable barnacles
-
-- `DATA_DIR` and `_resolve` helps make the file paths to the images easier, so you just have to type in the filename instead of the whole path
-- `load_image` converts BGR for OpenCV to RGB for everything else
-- `describe_file` describes the image for me so I have a better idea of what is going on before I wrote later steps
-- after running `describe_file` on `mask1`, i found that the background white of the image has alpha=0, meaning it is transparent. This makes my life easier because to detect for the circles in the image i can just serach for pixels with alpha>0
-- `load_mask_lines` looads an array of true or false for whether the pixel is a contour or not. It seems to work because most of the pixel values are false.
-- `mask_to_regions` is supposed to convert the masks to regions of each barnacle so they can be counted. There are some floating blue pixels that aren't a circled barnacle, and I don't want those to get counted as a barnacle. I tried to look inside each circle for empty pixels, and record these pockets of empty pixels within circles as barnacles. However, it counts small bubbles inside the drawn circle as another contour, and it doesn't count an outline if it has a small gap.
-- I rewrote `mask_to_regions` using `cv2.findContours` so that small bubbles inside circles aren't counted as their own barnacle. However, I still needed account for the floating pixels and contours with gaps.
-
-## Iterating over mask_to_regions
-
-- My first version ignored the lines and found the empty regions they enclose, one pocket per barnacle. I chose this because I assumed outlines would touch each other, and tracing touching lines would merge them. Looking at the overlays, outlines don't actually touch. The real problems were floating specks and outlines with small gaps. A gapped outline encloses no pocket, so those barnacles silently disappeared.
-- Switched to tracing the outlines directly. Removed specks by size, used a morphological close to bridge small gaps, and fell back to the convex hull for outlines with gaps too big to bridge. A RETR_CCOMP hierarchy tells closed outlines (they have a hole inside) from open ones. Barnacles that needed the hull are flagged so I can count them.
-- In dense areas, barnacles were disappearing. The close ran on the whole image, so it bridged the space between nearby outlines as well as gaps within them, fusing neighbors into one shape. On mask1 I saw big clusters of contours only counted as a few dots.
-- Since outlines don't touch, each connected cluster of line pixels is one barnacle. Now each cluster is cut out and closed on its own, so it has no neighbors to merge with.
-- Upon closer inspection of masks, it looks like some of the outlines do touch each other, so now we have to go back to the original strategy of detecting space inside an outline
 
 ## 1. Ground truth: turning outlines into dots
 
@@ -384,7 +350,47 @@ be to hand-count one quarter of the crop and compare.
 
 ---
 
-## 6. What I didn't do, and why
+## 6. How the code is organized, and why
+
+The five original modules each do one step: `data.py`, `frame.py`,
+`features.py`, `detect.py`, `evaluate.py`. As the project grew, I added three
+layers on top of them, each for a specific reason:
+
+* **`src/pipeline.py` calls the steps in order.** Load and crop a labeled
+  image, move its ground truth into the crop, train, turn probabilities into
+  dots. Before this existed, that sequence was copied into each experiment
+  script, and copies drift apart. Then the numbers in this log would describe
+  a slightly different program from the one a scientist runs.
+* **`src/experiments.py` holds the experiments as functions** that return
+  results: the spatial split, the cross-image test, the dot-spacing sweep, and
+  the final unseen counts. Both `run_experiments.py` (which prints tables)
+  and the notebook (which draws figures) call these same functions, so the
+  notebook can't quietly disagree with this log.
+* **Two entry points:** `count_barnacles.py` is the tool a scientist would
+  use (photos in, counts and review images out); `run_experiments.py`
+  reproduces the evaluation (`split`, `cross`, or `sweep`).
+
+**Caching.** Training the forests is the slow part: the split experiment takes
+2 to 3 minutes on one CPU core. So `experiments.py` saves each experiment's
+results to `outputs/cache/` the first time and loads them afterwards. The
+cache is gitignored; delete it, or run `run_experiments.py split --fresh`, to
+recompute from scratch. To keep it small, probability maps are stored at half
+precision. That has one visible side effect: in the spacing sweep, img1's
+count at the chosen spacing is 836 instead of 835, because one pixel landed
+on the other side of the 0.5 threshold.
+
+**Two practical lessons from this part:**
+
+* **Refactoring needs a check.** After moving the experiments into
+  `experiments.py`, I reran the split experiment and confirmed every number
+  matched the earlier run exactly before trusting the new code.
+* **Seeding makes results reproducible.** Every random step (pixel sampling,
+  forest training) uses a fixed seed. Running `count_barnacles.py` from a
+  clean copy of the repo, with no cached model, gives the same 1,482 and 194.
+
+---
+
+## 7. What I didn't do, and why
 
 * **No deep learning (CNN, U-Net, Mask R-CNN).** With two labeled photos, a
   network would mostly memorize them. Experiment A shows even a forest can't
@@ -404,7 +410,7 @@ be to hand-count one quarter of the crop and compare.
 
 ---
 
-## 7. How this would fit the scientists' workflow
+## 8. How this would fit the scientists' workflow
 
 The output isn't meant to replace counting, but to change it from *counting*
 1,500 barnacles to *checking* 1,500 dots, which is much faster. A review tool
@@ -421,7 +427,7 @@ would:
 
 ---
 
-## 8. Is this worth pursuing?
+## 9. Is this worth pursuing?
 
 **For img1-like scenes, yes.** A few percent count error with simple,
 explainable tools on two labeled photos is a solid starting point, especially
@@ -437,7 +443,7 @@ as a first draft for human review.
 
 ---
 
-## 9. What I learned
+## 10. What I learned
 
 * **Look at the data before designing around it.** This was the most
   repeated lesson of the project: pockets versus outlines, the assumed green
@@ -459,7 +465,7 @@ as a first draft for human review.
 
 ---
 
-## 10. Sources
+## 11. Sources
 
 * OpenCV-Python tutorials: color spaces (HSV), morphological
   transformations, contours and contour hierarchy (`RETR_CCOMP`),
@@ -472,6 +478,5 @@ as a first draft for human review.
   on a bank of filter responses.
 * Lindeberg's work on scale-space and automatic scale selection: the theory
   behind the LoG scale-estimation attempt, and why its σ²-normalization exists.
-* Claude, used throughout to write, test, and debug code and to
+* Claude (Anthropic), used throughout to write, test, and debug code and to
   talk through design decisions.
----
